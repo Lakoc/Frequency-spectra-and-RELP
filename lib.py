@@ -1,9 +1,8 @@
 import numpy as np
 from scipy.linalg import solve_toeplitz
 import scipy.signal as sg
-from features import mel_fbank_mx, mel, mel_inv
-import librosa
-import scipy
+from features import mel_fbank_mx
+
 
 def split_padded(sig, n_windows):
     """Pads signal with 0 and split equally to n windows"""
@@ -46,13 +45,18 @@ def psd_lpc(A, G, n_coef):
 
 
 def psd_mel(frame, w_size, nfft, n_banks, Fs, show_freq):
-    """    """
+    """Calculate power spectral density in mel domain"""
     windowed = np.hanning(w_size) * frame
     psd = (np.abs(np.fft.fft(windowed, n=nfft)[:show_freq]) ** 2) / w_size
     mel_filters = mel_fbank_mx(nfft, Fs, NUMCHANS=n_banks)
     mel_psd = psd @ mel_filters
 
-    mel_freq = np.linspace(mel(0), mel(Fs/2), n_banks + 2)
-
-    freq = np.argmax(mel_filters, axis=0) / show_freq * (Fs/2)
+    freq = np.argmax(mel_filters, axis=0) / show_freq * (Fs / 2)
     return mel_psd, freq
+
+
+def get_lpc_psd(A, G, freq_to_show):
+    """Add 0th coeff to the filter and convert to log domain"""
+    A = np.append(1.0, A[:-1])
+    psd = 10 * np.log10(psd_lpc(A, G, freq_to_show))
+    return psd
