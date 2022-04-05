@@ -57,6 +57,29 @@ def psd_mel(frame, w_size, nfft, n_banks, Fs, show_freq):
 
 def get_lpc_psd(A, G, freq_to_show):
     """Add 0th coeff to the filter and convert to log domain"""
-    A = np.append(1.0, A[:-1])
+    A = np.append(1.0, A)
     psd = 10 * np.log10(psd_lpc(A, G, freq_to_show))
     return psd
+
+
+def get_residuals(frames, filters, P):
+    filter_init = np.zeros(P)
+    residuals = []
+
+    for index, frame in enumerate(frames):
+        A = np.append(1.0, filters[index][0])  # appending with 1 for filtering
+        residual, filter_state = sg.lfilter(A, [1], frame, zi=filter_init)
+        filter_init = filter_state
+        residuals.append(residual)
+    return residuals
+
+
+def decode_from_residuals(residuals, filters, P):
+    filter_init = np.zeros(P)
+    sig_synthetized = []
+    for index, residual in enumerate(residuals):
+        A = np.append(1.0, filters[index][0])  # appending with 1 for filtering
+        synthetized, filter_state = sg.lfilter([1.0], A, residual, zi=filter_init)
+        filter_init = filter_state
+        sig_synthetized.append(synthetized)
+    return sig_synthetized

@@ -45,3 +45,14 @@ def plot_psd_variants(fft, lpc, mel):
     ax.legend()
 
     plt.show()
+
+
+def plot_original_vs_residual(sig, residual):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.set_title("Comparison of residual and original system of selected frame")
+    ax.plot(sig, label='original')
+    ax.plot(residual, label='residual')
+    ax.set_xlabel("Sample [n]")
+    ax.set_ylabel("Amplitude")
+    ax.legend()
+    plt.show()
