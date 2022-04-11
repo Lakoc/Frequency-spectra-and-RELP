@@ -56,3 +56,14 @@ def plot_original_vs_residual(sig, residual):
     ax.set_ylabel("Amplitude")
     ax.legend()
     plt.show()
+
+
+def plot_residual_vs_residual2(residual, residual2):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.set_title("Comparison of lpc residual and second residual")
+    ax.plot(residual, label='residual')
+    ax.plot(residual2, label='residual with pitch filtered')
+    ax.set_xlabel("Sample [n]")
+    ax.set_ylabel("Amplitude")
+    ax.legend()
+    plt.show()
