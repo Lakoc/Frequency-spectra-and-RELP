@@ -1,0 +1,6 @@
+notebook
+scipy
+librosa
+soundfile
+numpy
+matplotlib
