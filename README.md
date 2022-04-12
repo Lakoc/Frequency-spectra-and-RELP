@@ -8,25 +8,27 @@ Change directory to the root of the project.
 cd __PROJECT_ROOT__
 ```
 
-### Configure anaconda enviroment
+### Configure anaconda environment
 Create new environment with [anaconda distribution](https://www.anaconda.com/) and activate it.
 ```bash
 conda create -n ZRE python=3.9 --yes
 conda activate ZRE
 ```
-Install required packages
+
+### Install required packages
 ```bash
 pip install -r requirements.txt
 ```
 
 
-## Start up jupyter notebook.
+## How to run
+Start up jupyter notebook and open `ZRE_proj.ipynb`.
 
 ```bash
 jupyter notebook
 ```
 
-## Cleanup environment
+## Cleanup
 ```bash
 conda deactivate
 conda remove --name ZRE --all --yes
