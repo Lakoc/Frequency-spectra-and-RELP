@@ -3,7 +3,7 @@
 #### Date: 12.4.2022
 
 ## Installation
-Change directory to the root of the project.
+Change the current working directory to the root of the project.
 ```bash
 cd __PROJECT_ROOT__
 ```
