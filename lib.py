@@ -2,13 +2,14 @@ import numpy as np
 from scipy.linalg import solve_toeplitz
 import scipy.signal as sg
 from features import mel_fbank_mx
+import librosa
 
 
 def split_padded(sig, win_size):
     """Pads signal with 0 and split equally to n windows"""
     n_windows = np.ceil(sig.shape[0] / win_size).astype(int)
-    padding = (-sig.shape[0]) % n_windows
-    return np.split(np.concatenate((sig, np.zeros(padding))), n_windows)
+    padding = (n_windows * win_size) - sig.shape[0]
+    return np.array_split(np.concatenate((sig, np.zeros(padding))), n_windows)
 
 
 def psd_fft(frame, w_size, n_coef):
@@ -27,14 +28,18 @@ def lpc(frame, P):
     c = R[0:P]  # first column
     b = -R[1:]
 
-    # Solve with Levinson Durbin recursion
-    A = solve_toeplitz(c, b)
+    # Solve toeplitz matrix with Levinson Durbin recursion
+    A = solve_toeplitz(c, b)  # Levinson-Durbin recursion is called from the scipy toolkit
 
     # Calculate filter gain
     error_energy = R[0] + np.sum(A * R[1:])
     gain = np.sqrt(error_energy / frame.shape[0])
 
     return A, gain
+
+
+def to_float16(val_tuple):
+    return [item.astype(np.float16) for item in val_tuple]
 
 
 def psd_lpc(A, G, n_coef):
@@ -99,11 +104,11 @@ def nccf(signal, frame, start_index, end_index, min_lag, max_lag, prepended_vals
 
 
 def get_second_residuals(max_lag, min_lag, threshold, residuals, residuals_prepended, win_size):
-    filter_init = np.zeros(max_lag - 1)
+    filter_init = np.zeros(max_lag)
     prev_lag = 0
     residuals_filtered = np.empty_like(residuals)
     lags = np.zeros(len(residuals), dtype=int)
-    B = np.zeros(max_lag)
+    B = np.zeros(max_lag + 1)
     B[0] = 1.0
     # for each residual calculate all possible lags in specified range
     for index, frame in enumerate(residuals):
@@ -136,11 +141,55 @@ def get_second_residuals(max_lag, min_lag, threshold, residuals, residuals_prepe
     return residuals_filtered, lags
 
 
+def get_second_residuals_Gaussian(max_lag, min_lag, threshold_voiced, threshold_unvoiced, residuals,
+                                  residuals_prepended, win_size):
+    filter_init = np.zeros(max_lag)
+    prev_lag = 0
+    residuals_voiced = []
+    residuals_unvoiced = []
+    unvoiced_indexes = []
+    lags = np.zeros(len(residuals), dtype=int)
+    B = np.zeros(max_lag + 1)
+    B[0] = 1.0
+    # for each residual calculate all possible lags in specified range
+    for index, frame in enumerate(residuals):
+        nccfs = nccf(residuals_prepended, prepended_vals=max_lag + 1, end_index=(index + 1) * win_size,
+                     min_lag=min_lag, max_lag=max_lag, start_index=index * win_size, frame=frame)
+
+        # voiced segment
+        if np.any(nccfs > threshold_voiced):
+            lag = np.argmax(nccfs)
+
+            # different lag in this segment so clear up filter memory
+            if np.abs(prev_lag - lag) > 2:
+                filter_init[:] = 0
+            prev_lag = lag
+            lags[index] = lag
+
+            # init filter
+            B[1:] = 0.0
+            B[lag] = -1.0
+
+            filtered, filter_state = sg.lfilter(B, [1.0], frame, zi=filter_init)
+            filter_init = filter_state
+            residuals_voiced.append(filtered)
+        elif np.all(nccfs < threshold_unvoiced):
+            filter_init[:] = 0
+            filtered = (np.mean(frame).astype(np.float32), np.std(frame).astype(np.float32))
+            residuals_unvoiced.append(filtered)
+            unvoiced_indexes.append(index)
+        else:
+            filter_init[:] = 0
+            filtered = frame
+            residuals_voiced.append(filtered)
+    return residuals_voiced, residuals_unvoiced, np.array(unvoiced_indexes, dtype=np.uint32), lags
+
+
 def decode_from_residuals2(residuals, lags, max_lag):
     """Create signal from residuals of residuals"""
-    filter_init = np.zeros(max_lag - 1)
+    filter_init = np.zeros(max_lag)
     sig_synthetized = []
-    B = np.zeros(max_lag)
+    B = np.zeros(max_lag + 1)
     B[0] = 1.0
     prev_lag = 0
     for index, residual in enumerate(residuals):
@@ -159,3 +208,176 @@ def decode_from_residuals2(residuals, lags, max_lag):
             filter_init = filter_state
             sig_synthetized.append(synthetized)
     return sig_synthetized
+
+
+def sigma_clip(arr, a):
+    """Process sigma clipping of values outside mean +- a*sigma"""
+    mean = np.median(arr, axis=None)
+    std = np.std(arr, axis=None)
+    arr[arr < mean - a * std] = mean - a * std
+    arr[arr > mean + a * std] = mean + a * std
+    return arr
+
+
+def quantize(arr, bits_to_quantize):
+    """Quantize signal to the n bits, in logarithmic ration clipping outliers"""
+
+    if len(arr) == 0:
+        return arr, np.array(0), np.array(0), np.array(0)
+
+    arr_min = np.min(arr, axis=None)
+    # Convert to log domain, to better differentiate higher amplitudes,
+    # log of negative number is nan, so add minimum to get rid of nans
+    if arr_min < 0:
+        arr += np.abs(arr_min) + np.finfo(float).eps
+    arr = np.log(arr)
+
+    # Clip outliers
+    arr = sigma_clip(arr, 3)
+
+    # Quantization step
+    levels = 2 ** bits_to_quantize
+    q = (np.max(arr) - np.min(arr)) / levels
+
+    # Quantize and shift to the uint domain
+    quantized = arr // q
+    quantized_shift = np.abs(np.min(quantized))
+    quantized = (quantized + quantized_shift).astype(np.uint8)
+
+    return quantized, quantized_shift, q, arr_min
+
+
+def dequantize(arr, quantized_shift, q, arr_min):
+    """Create original arr from quantized one"""
+    arr = arr - quantized_shift
+    arr *= q
+    arr = np.exp(arr)
+    if arr_min < 0:
+        arr -= np.abs(arr_min)
+    return arr
+
+
+def encode_first_order_residuals(wav_file, Fs, win_size, P, L_bounds):
+    sig, Fs = librosa.load(wav_file, sr=Fs)
+    sig = sig - np.mean(sig)
+    frames = split_padded(sig, win_size)
+    lpc_filters = [to_float16(lpc(frame, P)) for frame in frames]
+    residuals = get_residuals(frames, lpc_filters)
+    residuals_prepended = np.pad(np.hstack(residuals), (L_bounds[1] + 1, 0), constant_values=0)
+    return residuals, residuals_prepended, lpc_filters
+
+
+def encoder_quantize(residuals_filtered, residual_bits, lags):
+    voiced_quantized, q_shift, q, min_val = quantize(residuals_filtered, residual_bits)
+    lags = lags.astype(np.uint8)
+    q_shift = q_shift.astype(np.uint8)
+    q = q.astype(np.float32)
+    min_val = min_val.astype(np.float32)
+    return voiced_quantized, q_shift, q, min_val, lags
+
+
+def encode_wav(wav_file, Fs, win_size, P, L_bounds, voiced_thr, residual_bits):
+    """Full encoder unit
+    1. load and frame signal
+    2. calculate lpc
+    3. get residuals
+    4. get second order residuals filtered by pitch
+    5. quantize second order residuals and cast other coefficients to smaller types"""
+    residuals, residuals_prepended, lpc_filters = encode_first_order_residuals(wav_file, Fs, win_size, P, L_bounds)
+    so_residuals, lags = get_second_residuals(L_bounds[1], L_bounds[0], threshold=voiced_thr,
+                                              residuals=residuals,
+                                              residuals_prepended=residuals_prepended, win_size=win_size)
+    return *encoder_quantize(so_residuals, residual_bits, lags), lpc_filters
+
+
+def encode_wav_gaussian(wav_file, Fs, win_size, P, L_bounds, residual_bits, voiced_thr, unvoiced_thr=None):
+    """Full encoder unit with unvoiced frames modeled by Gaussian noise
+    1. load and frame signal
+    2. calculate lpc
+    3. get residuals
+    4. get second order residuals filtered by pitch and modeled with Gaussian noise if weak correlation found
+    5. quantize second order residuals and cast other coefficients to smaller types"""
+    residuals, residuals_prepended, lpc_filters = encode_first_order_residuals(wav_file, Fs, win_size, P, L_bounds)
+    voiced_residuals, unvoiced_residuals, unvoiced_indexes, lags = \
+        get_second_residuals_Gaussian(L_bounds[1],
+                                      L_bounds[0],
+                                      threshold_voiced=voiced_thr,
+                                      threshold_unvoiced=unvoiced_thr or (
+                                              1 - voiced_thr),
+                                      residuals=residuals,
+                                      residuals_prepended=residuals_prepended,
+                                      win_size=win_size)
+    return *encoder_quantize(voiced_residuals, residual_bits, lags), unvoiced_residuals, unvoiced_indexes, lpc_filters
+
+
+def decode_wav(voiced_quantized, q_shift, q, min_val, lags, lpc_filters, L_max):
+    """Decoder unit
+    1. dequantize second order residuals
+    2. decode second order residuals to obtain first order residuals
+    3. decode first order residuals"""
+    q_shift = q_shift.astype(np.float32)
+    res_orig = dequantize(voiced_quantized, q_shift, q, min_val)
+    lags = lags.astype(np.int32)
+    decoded_sig = np.hstack(
+        decode_from_residuals(decode_from_residuals2(res_orig, lags, L_max), lpc_filters))
+    return decoded_sig
+
+
+def decode_wav_gaussian(voiced_quantized, unvoiced, unvoiced_indexes, q_shift, q, min_val, lags, lpc_filters, L_max,
+                        residual_size):
+    """Decoder unit with unvoiced residuals modeled by Gaussian noise
+     1. dequantize second order residuals
+     2. decode second order residuals to obtain first order residuals
+     3. decode first order residuals"""
+    q_shift = q_shift.astype(np.float32)
+    voiced = dequantize(voiced_quantized, q_shift, q, min_val)
+    res_orig = np.empty((voiced.shape[0] + unvoiced_indexes.shape[0], residual_size))
+
+    unvoiced_index = 0
+    voiced_index = 0
+    for index in range(res_orig.shape[0]):
+        if index in unvoiced_indexes:
+            residual = np.random.normal(unvoiced[unvoiced_index][0], unvoiced[unvoiced_index][1], res_orig.shape[1])
+            unvoiced_index += 1
+        else:
+            residual = voiced[voiced_index]
+            voiced_index += 1
+        res_orig[index] = residual
+    lags = lags.astype(np.int32)
+    decoded_sig = np.hstack(
+        decode_from_residuals(decode_from_residuals2(res_orig, lags, L_max), lpc_filters))
+    return decoded_sig
+
+
+def print_compression_stats(original_size, voiced_quantized, lpc_filters, q_shift, q, lags, residual_bits, min_val,
+                            L_max, unvoiced, unvoiced_indexes):
+    """Calculate compression stats and print them to the stdout"""
+    bits_per_byte = 8
+    print(f'Original wav size = {original_size / 1000:.2f} kB')
+    voiced_size = 0
+    unvoiced_size = 0
+    unvoiced_part = ''
+    voiced_part = ''
+    if len(voiced_quantized) > 0:
+        voiced_size = voiced_quantized.shape[0] * (
+                lpc_filters[0][1].nbytes + lpc_filters[0][0].nbytes + lags[0].nbytes + (
+                int(voiced_quantized.shape[1] * residual_bits) / bits_per_byte)) + \
+                      q_shift.nbytes + q.nbytes + min_val.nbytes
+        voiced_part = f' {voiced_quantized.shape[0]} [Number_of_voiced_frames] * ({lpc_filters[0][1].nbytes} ' \
+                      f'[Gain, float_16] + {lpc_filters[0][0].nbytes} [LPC_filters, 7 float_16]+ {lags[0].nbytes} ' \
+                      f'[Lag, uint_8] + {(int(voiced_quantized.shape[1] * residual_bits) / bits_per_byte)} ' \
+                      f'[Residual_quantized, {voiced_quantized.shape[1]} uint_{residual_bits}]) + ' \
+                      f'{q_shift.nbytes} [q_shift, uint_8] + {q.nbytes} [q, float_32] + {min_val.nbytes} ' \
+                      f'[min_val, float_32]'
+    if unvoiced is not None:
+        unvoiced_size = len(unvoiced) * (unvoiced[0][0].nbytes + unvoiced[0][1].nbytes) + unvoiced_indexes.nbytes
+
+        unvoiced_part += f' {len(unvoiced)} [Number_of_unvoiced_frames] * ({unvoiced[0][0].nbytes}' \
+                         f' [Gaussian mean, float32] + {unvoiced[0][1].nbytes} [Gaussian std, float32])' \
+                         f' + {unvoiced_indexes.nbytes} [unvoiced_indexes, {unvoiced_indexes.shape[0]} uint_32] +'
+    coded_size = int(
+        voiced_size + unvoiced_size + L_max.nbytes)
+    print(
+        f'Coded signal size ={voiced_part}{unvoiced_part} {L_max.nbytes} [L_max, uint_8] '
+        f'= {coded_size * 8} bits = {coded_size / 1000:.2f} kB')
+    print(f'Compression ratio = {original_size / coded_size:.2f}')
