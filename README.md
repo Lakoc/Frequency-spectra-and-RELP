@@ -27,7 +27,7 @@ Start up jupyter notebook and open `ZRE_proj.ipynb`.
 jupyter notebook
 ```
 
-> **_NOTE:_** Project outputs could be also visualized directly in the [Google collab](https://colab.research.google.com/github/Lakoc/ZRE/blob/main/ZRE_proj.ipynb).
+> **_NOTE:_** Project outputs could be also visualized directly in the [Google collab](https://colab.research.google.com/drive/1GP-YR_Y5eG0RfUsCd3hTt5UB8IywMokW?usp=sharing).
 
 ## Cleanup
 ```bash
