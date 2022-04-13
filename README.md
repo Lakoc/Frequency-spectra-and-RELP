@@ -23,10 +23,11 @@ pip install -r requirements.txt
 
 ## How to run
 Start up jupyter notebook and open `ZRE_proj.ipynb`.
-
 ```bash
 jupyter notebook
 ```
+
+> **_NOTE:_** Project outputs could be also visualized directly in the [Google collab](https://colab.research.google.com/github/Lakoc/ZRE/blob/main/ZRE_proj.ipynb).
 
 ## Cleanup
 ```bash
