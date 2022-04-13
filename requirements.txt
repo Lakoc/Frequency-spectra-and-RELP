@@ -1,6 +1,7 @@
 notebook
-scipy
-librosa
+ipython
+scipy~=1.8.0
+librosa~=0.9.1
 soundfile
-numpy
-matplotlib
+numpy~=1.21.5
+matplotlib~=3.5.1
