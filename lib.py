@@ -56,7 +56,7 @@ def psd_mel(frame, w_size, nfft, n_banks, Fs, show_freq):
     mel_psd = psd @ mel_filters
 
     freq = np.argmax(mel_filters, axis=0) / show_freq * (Fs / 2)
-    return mel_psd, freq
+    return mel_psd, freq, mel_filters
 
 
 def get_lpc_psd(A, G, freq_to_show):
@@ -350,7 +350,7 @@ def decode_wav_gaussian(voiced_quantized, unvoiced, unvoiced_indexes, q_shift, q
 
 
 def print_compression_stats(original_size, voiced_quantized, lpc_filters, q_shift, q, lags, residual_bits, min_val,
-                            L_max, unvoiced, unvoiced_indexes):
+                            L_max, unvoiced, unvoiced_indexes, compressed_indexes_bytes=0):
     """Calculate compression stats and print them to the stdout"""
     bits_per_byte = 8
     print(f'Original wav size = {original_size / 1000:.2f} kB')
@@ -362,13 +362,15 @@ def print_compression_stats(original_size, voiced_quantized, lpc_filters, q_shif
         voiced_size = voiced_quantized.shape[0] * (
                 lpc_filters[0][1].nbytes + lpc_filters[0][0].nbytes + lags[0].nbytes + (
                 int(voiced_quantized.shape[1] * residual_bits) / bits_per_byte)) + \
-                      q_shift.nbytes + q.nbytes + min_val.nbytes
+                      q_shift.nbytes + q.nbytes + min_val.nbytes + compressed_indexes_bytes
         voiced_part = f' {voiced_quantized.shape[0]} [Number_of_voiced_frames] * ({lpc_filters[0][1].nbytes} ' \
                       f'[Gain, float_16] + {lpc_filters[0][0].nbytes} [LPC_filters, 7 float_16]+ {lags[0].nbytes} ' \
-                      f'[Lag, uint_8] + {(int(voiced_quantized.shape[1] * residual_bits) / bits_per_byte)} ' \
+                      f'[Lag, uint_8] + {int((voiced_quantized.shape[1] * residual_bits) / bits_per_byte)} ' \
                       f'[Residual_quantized, {voiced_quantized.shape[1]} uint_{residual_bits}]) + ' \
                       f'{q_shift.nbytes} [q_shift, uint_8] + {q.nbytes} [q, float_32] + {min_val.nbytes} ' \
                       f'[min_val, float_32]'
+        if compressed_indexes_bytes > 0:
+            voiced_part += f' + {compressed_indexes_bytes} [compressed_indexes, {compressed_indexes_bytes} uint_8]'
     if unvoiced is not None:
         unvoiced_size = len(unvoiced) * (unvoiced[0][0].nbytes + unvoiced[0][1].nbytes) + unvoiced_indexes.nbytes
 
@@ -381,3 +383,29 @@ def print_compression_stats(original_size, voiced_quantized, lpc_filters, q_shif
         f'Coded signal size ={voiced_part}{unvoiced_part} {L_max.nbytes} [L_max, uint_8] '
         f'= {coded_size * 8} bits = {coded_size / 1000:.2f} kB')
     print(f'Compression ratio = {original_size / coded_size:.2f}')
+
+
+def compress_less_levels(quantized_residuals, reduce_to_n_bits):
+    """Compress array to n-bits by iteratively selecting the least common element
+     and replacing values in arr by neighboring element in histogram."""
+    frames = np.hstack(quantized_residuals).astype(int)
+    vals, counts = np.unique(frames, return_counts=True)
+
+    # Calculate how many indexes should be thrown away
+    indexes_to_throw = counts.shape[0] - (2 ** reduce_to_n_bits)
+    for throw in range(indexes_to_throw):
+        vals, counts = np.unique(frames, return_counts=True)
+        smallest_val = np.argsort(counts)[0]
+        val_to_be_replaced = vals[smallest_val]
+        smaller = vals[smallest_val - 1] if (smallest_val - 1 >= 0) else -1000  # constant which is always further
+        higher = vals[smallest_val + 1] if (
+                smallest_val + 1 < vals.shape[0]) else -1000  # constant which is always further
+        val_to_replace = higher if np.abs(val_to_be_replaced - higher) < np.abs(
+            val_to_be_replaced - smaller) else smaller  # find closer neighbor
+        frames[frames == val_to_be_replaced] = val_to_replace
+
+    indexes = np.unique(frames, return_counts=True)[0]
+    # Replace values with indexes to aux array
+    for index in range(indexes.shape[0]):
+        frames[frames == indexes[index]] = index
+    return frames.reshape(quantized_residuals.shape).astype(np.uint8), indexes.astype(np.uint8)

@@ -12,11 +12,13 @@ def plot_signal(sig):
     plt.show()
 
 
-def plot_psd(sig, freq):
+def plot_psd(sig, freq, filters=None):
     """Simple plot of psd"""
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.set_title("Log of PSD")
     ax.plot(freq, sig, color='C0')
+    if filters is not None:
+        ax.plot(filters[0], filters[1], linestyle='dashed', alpha=0.5)
     ax.set_xlabel("Frequency [Hz]")
     ax.set_ylabel("Amplitude [dB]")
 
@@ -33,13 +35,27 @@ def plot_lpc_errors(errors):
     plt.show()
 
 
-def plot_psd_variants(fft, lpc, mel):
+def plot_psd_variants(fft, lpc, mel, banks):
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.set_title("Comparison of power spectral density computed with different methods")
     ax.plot(fft[0], fft[1], label='fft')
     for lpc_psd, label in lpc[1]:
         ax.plot(lpc[0], lpc_psd, label=label)
     ax.plot(mel[0], mel[1], label='mel')
+    if banks is not None:
+        ax.plot(banks[0], banks[1], linestyle='dashed', alpha=0.5)
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("Amplitude [dB]")
+    ax.legend()
+
+    plt.show()
+
+
+def plot_lpc_variants(freq, lpcs):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.set_title("Comparison of power spectral density from LPC with different number of coefficients")
+    for lpc_psd, label in lpcs:
+        ax.plot(freq, lpc_psd, label=label)
     ax.set_xlabel("Frequency [Hz]")
     ax.set_ylabel("Amplitude [dB]")
     ax.legend()
